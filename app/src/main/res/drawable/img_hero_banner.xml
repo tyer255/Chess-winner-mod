@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:aapt="http://schemas.android.com/aapt"
+    android:width="360dp"
+    android:height="160dp"
+    android:viewportWidth="360"
+    android:viewportHeight="160">
+    <path android:pathData="M0,0h360v160h-360z">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:startX="0"
+                android:startY="0"
+                android:endX="360"
+                android:endY="160"
+                android:type="linear">
+                <item android:offset="0.0" android:color="#FF091124" />
+                <item android:offset="0.6" android:color="#FF121E3A" />
+                <item android:offset="1.0" android:color="#FF0A192F" />
+            </gradient>
+        </aapt:attr>
+    </path>
+    <!-- Perspective Chess Grid Overlay -->
+    <path
+        android:strokeColor="#2200E5FF"
+        android:strokeWidth="1"
+        android:pathData="M0,120 L360,120 M0,140 L360,140 M40,95 L320,95 M80,75 L280,75 M180,60 L180,160 M140,60 L80,160 M220,60 L280,160 M100,60 L10,160 M260,60 L350,160" />
+    <!-- Cyan Tactical Trajectory Arc -->
+    <path
+        android:strokeColor="#8800E5FF"
+        android:strokeWidth="2"
+        android:pathData="M70,130 Q175,30 285,115" />
+    <path
+        android:fillColor="#FF00E5FF"
+        android:pathData="M70,130m-4,0a4,4 0 1,1 8,0a4,4 0 1,1 -8,0" />
+    <path
+        android:fillColor="#FF00E5FF"
+        android:pathData="M285,115m-5,0a5,5 0 1,1 10,0a5,5 0 1,1 -10,0" />
+    <!-- Stylized Grandmaster King & Knight Silhouettes -->
+    <path
+        android:fillColor="#3300E5FF"
+        android:pathData="M280,32 h12 v4 h-4 v6 h8 l4,16 l-6,42 h10 l4,10 h-44 l4,-10 h10 l-6,-42 l4,-16 h8 v-6 h-4 z" />
+    <path
+        android:fillColor="#55FFFFFF"
+        android:pathData="M242,60 c0,-12 8,-22 20,-25 l-2,-6 l8,2 l4,5 c8,4 12,12 10,22 l-8,32 h10 l3,8 h-46 l3,-8 h8 l2,-16 l-8,3 l-4,-5 c0,-5 4,-9 8,-12 z" />
+</vector>

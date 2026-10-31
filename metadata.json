@@ -1,0 +1,10 @@
+{
+  "name": "Chess Winner",
+  "description": "Offline-first camera-enabled Chess Learning, Computer Vision Recognition, Stockfish UCI Analysis, and Interactive Chess Application.",
+  "requestFramePermissions": [
+    "camera"
+  ],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

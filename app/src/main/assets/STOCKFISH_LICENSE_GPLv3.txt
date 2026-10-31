@@ -1,0 +1,37 @@
+STOCKFISH CHESS ENGINE & UCI ENGINE MODULE — LEGAL & LICENSING INFORMATION
+==========================================================================
+
+1. Stockfish Engine License (GNU General Public License v3.0 - GPLv3)
+---------------------------------------------------------------------
+Stockfish is free, open-source software distributed under the terms of the
+GNU General Public License version 3 (GPL v3) or any later version.
+
+Copyright (C) 2004-2026 The Stockfish Developers (see AUTHORS file in the
+official Stockfish repository).
+
+Corresponding Source Code Availability:
+- Official Stockfish Source Repository: https://github.com/official-stockfish/Stockfish
+- UCI Protocol Specification: Stefan Meyer-Kahlen & Rudolf Huber
+
+2. GNU GENERAL PUBLIC LICENSE Version 3 Summary & Terms
+-------------------------------------------------------
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published by
+the Free Software Foundation, either version 3 of the License, or
+(at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License
+along with this program. If not, see <https://www.gnu.org/licenses/gpl-3.0.html>.
+
+3. Complete Source Code Offer
+-----------------------------
+In compliance with Section 6 of the GNU General Public License v3 (GPLv3),
+the complete corresponding machine-readable source code for the Stockfish
+UCI chess engine and all UCI engine components distributed with Chess Winner
+is available at https://github.com/official-stockfish/Stockfish and within
+the exported Android project source tree under `com/example/chess/engine/`.

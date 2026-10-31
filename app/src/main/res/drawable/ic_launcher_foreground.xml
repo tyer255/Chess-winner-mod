@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- Cyan glow ring inside safe zone -->
+    <path
+        android:fillColor="#2600E5FF"
+        android:pathData="M54,24A30,30 0 1,1 54,84A30,30 0 1,1 54,24Z" />
+    <!-- Bold Chess Knight & Crown Silhouette centered in 66dp safe zone -->
+    <path
+        android:fillColor="#FF00E5FF"
+        android:pathData="M36,74h36v5H36z" />
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M38,71h32l-3,-8H41l-3,8zM43,60h22l2,-18c0,-8 -5,-14 -13,-16l2,-4l-5,1l-3,3c-6,2 -11,7 -11,13l4,3l5,-2c1,3 -1,7 -3,11l0,9z" />
+    <path
+        android:fillColor="#FF0B132B"
+        android:pathData="M48,38a2,2 0 1,1 4,0a2,2 0 1,1 -4,0" />
+</vector>

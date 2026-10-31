@@ -1,0 +1,21 @@
+<resources>
+    <string name="app_name">Chess Winner</string>
+    <string name="recaptcha_site_key">6LeIxAcTAAAAAJcZVRqyHh71UMIEGNQ_MXjiZKhI</string>
+    <string name="brand_title">CHESS WINNER</string>
+    <string name="brand_subtitle">Camera Vision • Stockfish UCI • Tactical Mastery</string>
+    <string name="home_start_analysis">Start Chess Analysis</string>
+    <string name="home_camera_chess">Camera Chess</string>
+    <string name="home_physical_practice">Physical Chess Practice</string>
+    <string name="home_digital_board">Digital Chessboard</string>
+    <string name="home_import_game">Import Chess Game</string>
+    <string name="home_saved_games">Saved Games</string>
+    <string name="home_chess_learning">Chess Learning</string>
+    <string name="home_settings">Settings</string>
+    <string name="select_your_color">SELECT YOUR COLOR</string>
+    <string name="white_pieces">White Pieces</string>
+    <string name="black_pieces">Black Pieces</string>
+    <string name="start_session">Start</string>
+    <string name="configuration_all_set">Configuration All Set</string>
+    <string name="camera_chess_not_displaying">Chess is not displaying</string>
+    <string name="camera_board_detected_piece_req">Board detected — Piece recognition required</string>
+</resources>
