@@ -103,6 +103,11 @@ fun ChessWinnerApp(
     val calibratedCorners by viewModel.calibratedCorners.collectAsStateWithLifecycle()
     val isCameraPaused by viewModel.isCameraPaused.collectAsStateWithLifecycle()
     val useBackCamera by viewModel.useBackCamera.collectAsStateWithLifecycle()
+    val playerSide by viewModel.playerSide.collectAsStateWithLifecycle()
+    val sideToMove by viewModel.sideToMove.collectAsStateWithLifecycle()
+    val turnStatusLabel by viewModel.turnSynchronizationLabel.collectAsStateWithLifecycle()
+    val cameraCalibrationBoard by viewModel.cameraCalibrationBoard.collectAsStateWithLifecycle()
+    val cameraSideToMove by viewModel.cameraSideToMove.collectAsStateWithLifecycle()
 
     val activeLearningTab by viewModel.activeLearningTab.collectAsStateWithLifecycle()
     val selectedCheckmateLesson by viewModel.selectedCheckmateLesson.collectAsStateWithLifecycle()
@@ -307,6 +312,23 @@ fun ChessWinnerApp(
                 }
 
                 AppDestination.CAMERA_CHESS -> {
+                    val userRecommendedUci = if (
+                        visionResult.isChessboardDetected &&
+                        visionResult.isPieceRecognitionConfident &&
+                        visionResult.validationResult?.isValid == true &&
+                        playerSide == sideToMove &&
+                        engineAnalysis.error == null &&
+                        engineAnalysis.fen == visionResult.recognizedState?.toFen()
+                    ) {
+                        viewModel.getCameraUserRecommendedMoveUci() ?: engineAnalysis.bestMoveUci
+                    } else {
+                        null
+                    }
+                    val userRecommendedSan = if (userRecommendedUci != null) {
+                        viewModel.getCameraUserRecommendedMoveSan() ?: engineAnalysis.bestMoveSan
+                    } else {
+                        null
+                    }
                     CameraChessScreen(
                         scanMode = visionScanMode,
                         visionResult = visionResult,
@@ -314,6 +336,13 @@ fun ChessWinnerApp(
                         isCameraPaused = isCameraPaused,
                         useBackCamera = useBackCamera,
                         orientation = orientation,
+                        playerSide = playerSide,
+                        sideToMove = sideToMove,
+                        turnStatusLabel = turnStatusLabel,
+                        cameraCalibrationBoard = cameraCalibrationBoard,
+                        cameraSideToMove = cameraSideToMove,
+                        userRecommendedMoveUci = userRecommendedUci,
+                        userRecommendedMoveSan = userRecommendedSan,
                         boardState = boardState,
                         engineAnalysis = engineAnalysis,
                         userSettings = userSettings,
@@ -328,8 +357,16 @@ fun ChessWinnerApp(
                         onUpdateCorners = { viewModel.updateCornerCalibration(it) },
                         onConfirmCalibration = { viewModel.confirmBoardPieceCalibration() },
                         onLoadStandardStartingBoard = { viewModel.loadStandardStartingBoardInCamera() },
+                        onClearCalibrationBoard = { viewModel.clearCameraCalibrationBoard() },
+                        onSetCameraSideToMove = { viewModel.setCameraSideToMove(it) },
                         onManualPieceOverride = { sq, piece ->
                             viewModel.applyManualPieceOverrideInCamera(sq, piece)
+                        },
+                        onConfirmMoveInCamera = { from, to ->
+                            viewModel.confirmMoveInCamera(from, to)
+                        },
+                        onPlayRecommendedMoveInCamera = {
+                            viewModel.playRecommendedBestMove()
                         },
                         onOpenInFullAnalysis = { viewModel.openRecognizedCameraPositionInAnalysis() },
                         onBack = { viewModel.navigateBack() }

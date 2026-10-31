@@ -379,6 +379,25 @@ class StockfishUciEngine(private val context: Context? = null) {
         logUci(">> stop")
     }
 
+    /**
+     * Cancels any running search and clears stale move recommendations when the camera scan
+     * is uncertain or unconfirmed so stale recommendations are never shown.
+     */
+    fun clearAnalysisForUncertainPosition(reason: String = "Uncertain or unconfirmed board position") {
+        analysisJob?.cancel()
+        analysisJob = null
+        _analysisState.value = _analysisState.value.copy(
+            isAnalyzing = false,
+            currentDepth = 0,
+            bestMoveUci = null,
+            bestMoveSan = null,
+            evaluationCentipawns = 0,
+            mateInMoves = null,
+            candidateLines = emptyList(),
+            error = reason
+        )
+    }
+
     fun clearHash() {
         transpositionTable.clear()
         logUci(">> setoption name Clear Hash")
@@ -398,7 +417,7 @@ class StockfishUciEngine(private val context: Context? = null) {
 
     /**
      * Starts asynchronous UCI analysis for the validated [boardState].
-     * Cancels any previous analysis immediately.
+     * Cancels any previous analysis immediately and clears stale move recommendations.
      */
     fun analyzePosition(
         boardState: ChessBoardState,
@@ -410,33 +429,45 @@ class StockfishUciEngine(private val context: Context? = null) {
         val targetDepth = (customDepth ?: cfg.targetDepth).coerceIn(2, 10)
         val maxTimeMs = (customTimeMs ?: cfg.maxAnalysisTimeMs).coerceIn(300L, 10000L)
 
-        analysisJob = scope.launch {
-            val validation = ChessRulesEngine.validatePosition(boardState)
-            if (!validation.isValid) {
-                _analysisState.value = _analysisState.value.copy(
-                    fen = boardState.toFen(),
-                    isAnalyzing = false,
-                    error = "Invalid position: ${validation.errors.firstOrNull()}"
-                )
-                return@launch
-            }
+        val validation = ChessRulesEngine.validatePosition(boardState)
+        val fen = boardState.toFen()
+        if (!validation.isValid) {
+            _analysisState.value = _analysisState.value.copy(
+                fen = fen,
+                isAnalyzing = false,
+                currentDepth = 0,
+                bestMoveUci = null,
+                bestMoveSan = null,
+                evaluationCentipawns = 0,
+                mateInMoves = null,
+                candidateLines = emptyList(),
+                error = "Invalid position: ${validation.errors.firstOrNull()}"
+            )
+            return
+        }
 
+        // Immediately mark the new FEN as analyzing and clear any stale bestMove from an older FEN
+        _analysisState.value = _analysisState.value.copy(
+            fen = fen,
+            isAnalyzing = true,
+            currentDepth = 0,
+            targetDepth = targetDepth,
+            bestMoveUci = null,
+            bestMoveSan = null,
+            mateInMoves = null,
+            candidateLines = emptyList(),
+            error = null
+        )
+
+        analysisJob = scope.launch {
             if (!_isReady.value) {
                 initializeEngine()
             }
 
-            val fen = boardState.toFen()
             logUci(">> position fen $fen")
             logUci(">> go depth $targetDepth movetime $maxTimeMs")
 
             val startTime = System.currentTimeMillis()
-            _analysisState.value = _analysisState.value.copy(
-                fen = fen,
-                isAnalyzing = true,
-                currentDepth = 0,
-                targetDepth = targetDepth,
-                error = null
-            )
 
             try {
                 val legalMoves = ChessRulesEngine.generateLegalMoves(boardState)
@@ -601,6 +632,30 @@ class StockfishUciEngine(private val context: Context? = null) {
             initializeEngine()
         }
         val fen = boardState.toFen()
+        val validation = ChessRulesEngine.validatePosition(boardState)
+        if (!validation.isValid) {
+            val invalidRes = EngineAnalysisResult(
+                fen = fen,
+                isAnalyzing = false,
+                currentDepth = 0,
+                targetDepth = depth,
+                bestMoveUci = null,
+                bestMoveSan = null,
+                evaluationCentipawns = 0,
+                mateInMoves = null,
+                candidateLines = emptyList(),
+                nodesSearched = 0L,
+                nodesPerSecond = 0L,
+                elapsedMs = 0L,
+                engineName = verifiedUciIdName,
+                isGenuineStockfish = usingNativeBinary,
+                executedBinaryPath = verifiedBinaryPath,
+                error = "Invalid position: ${validation.errors.firstOrNull()}"
+            )
+            _analysisState.value = invalidRes
+            return@withContext invalidRes
+        }
+
         val legalMoves = ChessRulesEngine.generateLegalMoves(boardState)
         if (legalMoves.isEmpty()) {
             val terminalScore = when (boardState.status) {

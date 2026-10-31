@@ -630,6 +630,13 @@ fun ColorConfigurationScreen(
                                 fontSize = 12.sp,
                                 color = TextPrimary
                             )
+                            Spacer(modifier = Modifier.height(2.dp))
+                            Text(
+                                text = report.nextActionGuidance,
+                                style = MaterialTheme.typography.bodyMedium,
+                                fontSize = 11.sp,
+                                color = CyanAccent
+                            )
                         }
                     }
                     Spacer(modifier = Modifier.height(8.dp))
@@ -712,79 +719,79 @@ fun ColorConfigurationScreen(
             )
         }
 
-                // Failure & Recovery Card (when any module fails initialization)
-                if (report.failedModuleName != null) {
-                    Spacer(modifier = Modifier.height(12.dp))
-                    Card(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .border(1.5.dp, CrimsonError, RoundedCornerShape(14.dp))
-                            .testTag("module_init_failure_banner"),
-                        shape = RoundedCornerShape(14.dp),
-                        colors = CardDefaults.cardColors(containerColor = Color(0xFF2D0A12))
+        // Failure & Recovery Card (when any module fails initialization)
+        if (report.failedModuleName != null) {
+            Spacer(modifier = Modifier.height(12.dp))
+            Card(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .border(1.5.dp, CrimsonError, RoundedCornerShape(14.dp))
+                    .testTag("module_init_failure_banner"),
+                shape = RoundedCornerShape(14.dp),
+                colors = CardDefaults.cardColors(containerColor = Color(0xFF2D0A12))
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(14.dp)
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(
+                            imageVector = Icons.Default.Error,
+                            contentDescription = "Module Failure",
+                            tint = CrimsonError,
+                            modifier = Modifier.size(24.dp)
+                        )
+                        Spacer(modifier = Modifier.width(10.dp))
+                        Text(
+                            text = "Initialization Halted: ${report.failedModuleName}",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold,
+                            color = CrimsonError
+                        )
+                    }
+                    Spacer(modifier = Modifier.height(6.dp))
+                    Text(
+                        text = report.failureRecoveryMessage ?: "Check module permissions and retry.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = TextPrimary
+                    )
+                    Spacer(modifier = Modifier.height(10.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
                     ) {
-                        Column(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(14.dp)
-                        ) {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Icon(
-                                    imageVector = Icons.Default.Error,
-                                    contentDescription = "Module Failure",
-                                    tint = CrimsonError,
-                                    modifier = Modifier.size(24.dp)
-                                )
-                                Spacer(modifier = Modifier.width(10.dp))
-                                Text(
-                                    text = "Initialization Halted: ${report.failedModuleName}",
-                                    style = MaterialTheme.typography.titleMedium,
-                                    fontWeight = FontWeight.Bold,
-                                    color = CrimsonError
-                                )
-                            }
-                            Spacer(modifier = Modifier.height(6.dp))
-                            Text(
-                                text = report.failureRecoveryMessage ?: "Check module permissions and retry.",
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = TextPrimary
-                            )
-                            Spacer(modifier = Modifier.height(10.dp))
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.spacedBy(10.dp)
+                        if (report.launchTarget.requiresCameraAndVision) {
+                            Button(
+                                onClick = { cameraPermissionLauncher.launch(Manifest.permission.CAMERA) },
+                                colors = ButtonDefaults.buttonColors(containerColor = CyanAccent, contentColor = Color.Black),
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .testTag("grant_camera_recovery_button")
                             ) {
-                                if (report.launchTarget.requiresCameraAndVision) {
-                                    Button(
-                                        onClick = { cameraPermissionLauncher.launch(Manifest.permission.CAMERA) },
-                                        colors = ButtonDefaults.buttonColors(containerColor = CyanAccent, contentColor = Color.Black),
-                                        modifier = Modifier
-                                            .weight(1f)
-                                            .testTag("grant_camera_recovery_button")
-                                    ) {
-                                        Text("Grant Camera Permission")
-                                    }
-                                    OutlinedButton(
-                                        onClick = onSwitchToDigitalFallback,
-                                        modifier = Modifier
-                                            .weight(1f)
-                                            .testTag("fallback_digital_board_button")
-                                    ) {
-                                        Text("Use Digital Board", color = TextPrimary)
-                                    }
-                                } else {
-                                    Button(
-                                        onClick = { onStartInitialization(hasCameraPerm) },
-                                        colors = ButtonDefaults.buttonColors(containerColor = CyanAccent, contentColor = Color.Black),
-                                        modifier = Modifier.fillMaxWidth()
-                                    ) {
-                                        Text("Retry Initialization")
-                                    }
-                                }
+                                Text("Grant Camera Permission")
+                            }
+                            OutlinedButton(
+                                onClick = onSwitchToDigitalFallback,
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .testTag("fallback_digital_board_button")
+                            ) {
+                                Text("Use Digital Board", color = TextPrimary)
+                            }
+                        } else {
+                            Button(
+                                onClick = { onStartInitialization(hasCameraPerm) },
+                                colors = ButtonDefaults.buttonColors(containerColor = CyanAccent, contentColor = Color.Black),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Text("Retry Initialization")
                             }
                         }
                     }
                 }
+            }
+        }
 
         // 7-Module Diagnostic Checklist
         Text(
@@ -890,12 +897,32 @@ private fun ModuleChecklistRow(
             )
             Spacer(modifier = Modifier.width(12.dp))
             Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = "${item.id}. ${item.moduleName}",
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.SemiBold,
-                    color = TextPrimary
-                )
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text(
+                        text = "${item.id}. ${item.moduleName}",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold,
+                        color = TextPrimary,
+                        modifier = Modifier.weight(1f)
+                    )
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Surface(
+                        color = tint.copy(alpha = 0.16f),
+                        shape = RoundedCornerShape(6.dp)
+                    ) {
+                        Text(
+                            text = item.readinessCategory.badgeLabel,
+                            style = MaterialTheme.typography.labelMedium,
+                            fontSize = 10.sp,
+                            color = tint,
+                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                        )
+                    }
+                }
                 Text(
                     text = item.detailMessage,
                     style = MaterialTheme.typography.bodyMedium,

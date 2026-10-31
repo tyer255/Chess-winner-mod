@@ -1,5 +1,6 @@
 package com.example
 
+import com.example.chess.core.CastlingRights
 import com.example.chess.core.ChessBoardState
 import com.example.chess.core.ChessRulesEngine
 import com.example.chess.core.GameStatus
@@ -12,10 +13,12 @@ import com.example.chess.engine.StockfishUciEngine
 import com.example.chess.learning.ChessLearningAssistant
 import com.example.chess.vision.ChessVisionPipeline
 import com.example.chess.vision.VisionScanMode
+import java.nio.ByteBuffer
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -154,6 +157,35 @@ class ExampleUnitTest {
     }
 
     @Test
+    fun `StockfishUciEngine rejects invalid positions and clears stale recommendations`() = runBlocking {
+        val engine = StockfishUciEngine()
+        engine.initializeEngine()
+
+        // First analyze a valid position so engine has a recommendation
+        val validState = ChessRulesEngine.createInitialState()
+        val validRes = engine.analyzePositionBlocking(validState, depth = 2, maxTimeMs = 500L)
+        assertNotNull(validRes.bestMoveUci)
+
+        // Now pass an invalid position (0 kings) to analyzePositionBlocking
+        val invalidState = ChessBoardState(
+            squares = List(64) { null },
+            activeColor = PieceColor.WHITE,
+            castlingRights = CastlingRights.NONE
+        )
+        val invalidRes = engine.analyzePositionBlocking(invalidState, depth = 2, maxTimeMs = 500L)
+        assertNull("Invalid position must never produce bestMoveUci", invalidRes.bestMoveUci)
+        assertNull("Invalid position must never produce bestMoveSan", invalidRes.bestMoveSan)
+        assertTrue("Invalid position must have empty candidateLines", invalidRes.candidateLines.isEmpty())
+        assertNotNull("Invalid position must report validation error", invalidRes.error)
+
+        // Also verify analyzePosition(invalidState) clears stale state on StateFlow
+        engine.analyzePosition(invalidState)
+        assertNull(engine.analysisState.value.bestMoveUci)
+        assertNull(engine.analysisState.value.bestMoveSan)
+        assertTrue(engine.analysisState.value.candidateLines.isEmpty())
+    }
+
+    @Test
     fun `TFLite model audit verifies dimensions, labels, and reports missing model without fake weights`() {
         val pipeline = ChessVisionPipeline()
         val audit = pipeline.auditTfliteModel()
@@ -166,6 +198,49 @@ class ExampleUnitTest {
         assertEquals(13, audit.classLabels.size)
         assertTrue(pipeline.getModelStatusDescription().contains("Not Trained AI"))
         assertTrue(pipeline.verifyGeometryDetectorSelfTest())
+    }
+
+    @Test
+    fun `extractUprightLuminanceFromYPlane strips rowStride padding and rotates sensor frames accurately`() {
+        // Create a 4x2 image with rowStride = 8 (4 padding bytes per row)
+        val width = 4
+        val height = 2
+        val rowStride = 8
+        val rawBytes = ByteArray(rowStride * height) { 99.toByte() }
+        // Row 0: 10, 20, 30, 40
+        rawBytes[0] = 10; rawBytes[1] = 20; rawBytes[2] = 30; rawBytes[3] = 40
+        // Row 1: 50, 60, 70, 80
+        rawBytes[8] = 50; rawBytes[9] = 60; rawBytes[10] = 70; rawBytes[11] = 80
+
+        val unrotated = ChessVisionPipeline.extractUprightLuminanceFromYPlane(
+            buffer = ByteBuffer.wrap(rawBytes),
+            width = width,
+            height = height,
+            rowStride = rowStride,
+            pixelStride = 1,
+            rotationDegrees = 0
+        )
+        assertEquals(4, unrotated.second)
+        assertEquals(2, unrotated.third)
+        assertEquals(10, unrotated.first[0].toInt())
+        assertEquals(40, unrotated.first[3].toInt())
+        assertEquals(50, unrotated.first[4].toInt())
+        assertEquals(80, unrotated.first[7].toInt())
+
+        // Rotate 90 degrees clockwise -> output is 2x4
+        val rotated90 = ChessVisionPipeline.extractUprightLuminanceFromYPlane(
+            buffer = ByteBuffer.wrap(rawBytes),
+            width = width,
+            height = height,
+            rowStride = rowStride,
+            pixelStride = 1,
+            rotationDegrees = 90
+        )
+        assertEquals(2, rotated90.second)
+        assertEquals(4, rotated90.third)
+        // Top-left of 90-CW rotated image comes from (x=0, y=1) = 50; top-right from (x=0, y=0) = 10
+        assertEquals(50, rotated90.first[0].toInt())
+        assertEquals(10, rotated90.first[1].toInt())
     }
 
     @Test
@@ -273,7 +348,7 @@ class ExampleUnitTest {
         )
         assertFalse("Position with 2 White Kings must be rejected", resTwoKings.validationResult!!.isValid)
 
-        // 8. Manual square correction with valid kings + rook -> validated & Configuration All Set!
+        // 8. Manual square correction with valid kings + rook and independent orientation vs activeColor
         val validOverrides = mapOf(
             Square.fromAlgebraic("e1")!! to Piece(PieceType.KING, PieceColor.WHITE),
             Square.fromAlgebraic("a1")!! to Piece(PieceType.ROOK, PieceColor.WHITE),
@@ -284,10 +359,13 @@ class ExampleUnitTest {
             width = 128,
             height = 128,
             scanMode = VisionScanMode.SCREENSHOT_IMPORT,
+            orientation = PieceColor.BLACK,
             manualOverrides = validOverrides,
-            userConfirmedCalibration = true
+            userConfirmedCalibration = true,
+            activeColor = PieceColor.WHITE
         )
         assertTrue(resValidCalibrated.validationResult!!.isValid)
+        assertEquals(PieceColor.WHITE, resValidCalibrated.recognizedState!!.activeColor)
         assertEquals(ChessVisionPipeline.MSG_CONFIGURATION_ALL_SET, resValidCalibrated.statusBannerMessage)
     }
 }

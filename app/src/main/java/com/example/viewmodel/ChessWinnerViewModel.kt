@@ -106,11 +106,21 @@ enum class ModuleCheckStatus {
     FAILED
 }
 
+enum class ModuleReadinessCategory(val badgeLabel: String) {
+    PENDING("PENDING"),
+    INITIALIZED("MODULE INITIALIZED"),
+    OPERATIONAL("MODULE OPERATIONAL"),
+    INCOMPLETE("MODULE INCOMPLETE"),
+    REQUIRES_USER_INPUT("REQUIRES USER INPUT"),
+    FAILED("MODULE FAILED")
+}
+
 data class ModuleInitItem(
     val id: Int,
     val moduleName: String,
     val requiredForSession: Boolean,
     val status: ModuleCheckStatus = ModuleCheckStatus.PENDING,
+    val readinessCategory: ModuleReadinessCategory = ModuleReadinessCategory.PENDING,
     val detailMessage: String = "Waiting...",
     val recoveryHint: String? = null
 )
@@ -130,6 +140,7 @@ data class SystemInitReport(
     val databaseReady: Boolean = false,
     val isFullAutomaticRecognitionReady: Boolean = false,
     val readinessBannerSubtitle: String = "Core modules verified.",
+    val nextActionGuidance: String = "Select your playing side and press Start Session.",
     val failedModuleName: String? = null,
     val failureRecoveryMessage: String? = null,
     val modules: List<ModuleInitItem> = emptyList()
@@ -176,8 +187,18 @@ class ChessWinnerViewModel(application: Application) : AndroidViewModel(applicat
 
     private val navBackStack = ArrayDeque<AppDestination>()
 
+    // Section 4: Maintain two separate states:
+    // 1. playerSide (User-selected color: WHITE or BLACK; never changed by orientation flip or moves)
+    // 2. sideToMove (Actual turn obtained from the latest validated chess position/FEN)
     private val _playerColor = MutableStateFlow(PieceColor.WHITE)
     val playerColor: StateFlow<PieceColor> = _playerColor.asStateFlow()
+    val playerSide: StateFlow<PieceColor> = _playerColor.asStateFlow()
+
+    private val _sideToMove = MutableStateFlow(positionManager.boardState.value.activeColor)
+    val sideToMove: StateFlow<PieceColor> = _sideToMove.asStateFlow()
+
+    private val _turnSynchronizationLabel = MutableStateFlow("YOUR TURN")
+    val turnSynchronizationLabel: StateFlow<String> = _turnSynchronizationLabel.asStateFlow()
 
     private val _playAgainstEngine = MutableStateFlow(true)
     val playAgainstEngine: StateFlow<Boolean> = _playAgainstEngine.asStateFlow()
@@ -216,8 +237,17 @@ class ChessWinnerViewModel(application: Application) : AndroidViewModel(applicat
     private val _calibratedCorners = MutableStateFlow(BoardCorners())
     val calibratedCorners: StateFlow<BoardCorners> = _calibratedCorners.asStateFlow()
 
+    private val _userConfirmedCorners = MutableStateFlow(false)
+    val userConfirmedCorners: StateFlow<Boolean> = _userConfirmedCorners.asStateFlow()
+
     private val _manualSquareOverrides = MutableStateFlow<Map<Square, Piece?>>(emptyMap())
     val manualSquareOverrides: StateFlow<Map<Square, Piece?>> = _manualSquareOverrides.asStateFlow()
+
+    private val _cameraCalibrationBoard = MutableStateFlow(ChessRulesEngine.createInitialState())
+    val cameraCalibrationBoard: StateFlow<ChessBoardState> = _cameraCalibrationBoard.asStateFlow()
+
+    private val _cameraSideToMove = MutableStateFlow(PieceColor.WHITE)
+    val cameraSideToMove: StateFlow<PieceColor> = _cameraSideToMove.asStateFlow()
 
     private val _userConfirmedCalibration = MutableStateFlow(false)
     val userConfirmedCalibration: StateFlow<Boolean> = _userConfirmedCalibration.asStateFlow()
@@ -284,6 +314,14 @@ class ChessWinnerViewModel(application: Application) : AndroidViewModel(applicat
             stockfishEngine.analyzePosition(positionManager.boardState.value)
         }
 
+        // Synchronize sideToMove and turnSynchronizationLabel whenever validated boardState changes
+        viewModelScope.launch {
+            positionManager.boardState.collect { validBoard ->
+                _sideToMove.value = validBoard.activeColor
+                refreshTurnSynchronizationLabel()
+            }
+        }
+
         // Observe settings changes and apply to engine & camera
         viewModelScope.launch {
             userSettings.collect { settings ->
@@ -308,6 +346,25 @@ class ChessWinnerViewModel(application: Application) : AndroidViewModel(applicat
             }
         }
     }
+
+    private fun refreshTurnSynchronizationLabel() {
+        val currentTurn = positionManager.boardState.value.activeColor
+        _sideToMove.value = currentTurn
+        _turnSynchronizationLabel.value = if (_playerColor.value == currentTurn) {
+            "YOUR TURN"
+        } else {
+            "OPPONENT'S TURN"
+        }
+    }
+
+    fun getTurnStatusLabel(
+        selectedPlayerSide: PieceColor = _playerColor.value,
+        currentSideToMove: PieceColor = _sideToMove.value
+    ): String {
+        return if (selectedPlayerSide == currentSideToMove) "YOUR TURN" else "OPPONENT'S TURN"
+    }
+
+    fun isPlayerTurnNow(): Boolean = _playerColor.value == _sideToMove.value
 
     // Navigation
     fun navigateTo(destination: AppDestination) {
@@ -338,7 +395,16 @@ class ChessWinnerViewModel(application: Application) : AndroidViewModel(applicat
     fun openColorConfigurationForSession(target: SessionLaunchTarget) {
         val defaultColor = userSettings.value.defaultPlayerColor
         _playerColor.value = defaultColor
+        positionManager.setOrientation(defaultColor)
+        refreshTurnSynchronizationLabel()
         _visionScanMode.value = target.defaultScanMode
+        if (target.requiresCameraAndVision) {
+            _userConfirmedCalibration.value = false
+            _userConfirmedCorners.value = false
+            _manualSquareOverrides.value = emptyMap()
+            _cameraCalibrationBoard.value = positionManager.boardState.value
+            _cameraSideToMove.value = positionManager.boardState.value.activeColor
+        }
         _systemInitReport.value = SystemInitReport(
             selectedColor = defaultColor,
             launchTarget = target,
@@ -352,6 +418,7 @@ class ChessWinnerViewModel(application: Application) : AndroidViewModel(applicat
     fun selectPlayerColor(color: PieceColor) {
         _playerColor.value = color
         positionManager.setOrientation(color)
+        refreshTurnSynchronizationLabel()
         _systemInitReport.value = _systemInitReport.value.copy(
             selectedColor = color,
             isAllSet = false,
@@ -362,25 +429,31 @@ class ChessWinnerViewModel(application: Application) : AndroidViewModel(applicat
 
     private fun buildInitialModuleList(requiresCamera: Boolean): List<ModuleInitItem> {
         return listOf(
-            ModuleInitItem(1, "Camera Ready (CameraX)", requiresCamera),
-            ModuleInitItem(2, "Board Geometry Detection Ready", true),
-            ModuleInitItem(3, "Trained Piece Recognition Ready (TFLite)", false),
-            ModuleInitItem(4, "Manual Calibration Available", true),
-            ModuleInitItem(5, "Stockfish / UCI Engine Ready", true),
-            ModuleInitItem(6, "Chess Rules Ready", true),
-            ModuleInitItem(7, "Database Ready (Room SQLite)", true)
+            ModuleInitItem(1, "Camera Permission / CameraX Initialization", requiresCamera),
+            ModuleInitItem(2, "Board Geometry Detection", true),
+            ModuleInitItem(3, "Trained Piece Recognition (TFLite)", false),
+            ModuleInitItem(4, "Manual Calibration", true),
+            ModuleInitItem(5, "Chess Engine / UCI", true),
+            ModuleInitItem(6, "Chess Rules Engine", true),
+            ModuleInitItem(7, "Database (Room SQLite)", true)
         )
     }
 
     /**
      * Performs strict verification of all 7 system modules when Start is pressed:
-     * 1. Camera ready
-     * 2. Board geometry detection ready
-     * 3. Trained piece recognition ready (never reported as ready when chess_piece_classifier.tflite is missing)
-     * 4. Manual calibration available
-     * 5. Stockfish / UCI engine ready (distinguishing genuine Stockfish binary vs. fallback engine)
-     * 6. Chess rules ready
-     * 7. Database ready
+     * 1. Camera Permission / CameraX Initialization
+     * 2. Board Geometry Detection
+     * 3. Trained Piece Recognition (never reported as READY when chess_piece_classifier.tflite is missing)
+     * 4. Manual Calibration
+     * 5. Chess Engine / UCI (distinguishing genuine Stockfish binary vs. fallback engine)
+     * 6. Chess Rules Engine
+     * 7. Database (Room SQLite)
+     *
+     * Explicitly distinguishes:
+     * - MODULE INITIALIZED
+     * - MODULE OPERATIONAL
+     * - MODULE INCOMPLETE
+     * - REQUIRES USER INPUT
      */
     fun runSystemInitializationAndStart(cameraPermissionGranted: Boolean) {
         val target = _systemInitReport.value.launchTarget
@@ -395,7 +468,7 @@ class ChessWinnerViewModel(application: Application) : AndroidViewModel(applicat
             modules = modules.toList()
         )
 
-        // 1. Verify Camera Ready
+        // 1. Verify Camera Permission / CameraX Initialization
         val context = getApplication<Application>()
         val hasPerm = cameraPermissionGranted || ContextCompat.checkSelfPermission(
             context,
@@ -414,16 +487,18 @@ class ChessWinnerViewModel(application: Application) : AndroidViewModel(applicat
         modules[0] = if (hasPerm) {
             modules[0].copy(
                 status = ModuleCheckStatus.PASSED,
-                detailMessage = "Camera Ready: Android CameraX permission granted & frame analyzer ready."
+                readinessCategory = ModuleReadinessCategory.INITIALIZED,
+                detailMessage = "MODULE INITIALIZED: Android CAMERA permission granted; CameraX preview & Y-plane analyzer ready to bind."
             )
         } else {
             modules[0].copy(
                 status = ModuleCheckStatus.WARNING,
-                detailMessage = "Camera permission not granted (Not required for ${target.title}; required for Camera modes)."
+                readinessCategory = ModuleReadinessCategory.REQUIRES_USER_INPUT,
+                detailMessage = "REQUIRES USER INPUT: Camera permission not granted (Not required for ${target.title}; required for Camera modes)."
             )
         }
 
-        // 2. Verify Board Geometry Detection Ready
+        // 2. Verify Board Geometry Detection
         val geometryOk = visionPipeline.verifyGeometryDetectorSelfTest()
         if (!geometryOk) {
             failInitialization(
@@ -436,25 +511,28 @@ class ChessWinnerViewModel(application: Application) : AndroidViewModel(applicat
         }
         modules[1] = modules[1].copy(
             status = ModuleCheckStatus.PASSED,
-            detailMessage = "Board Geometry Detection Ready: 8x8 perspective warp & checkerboard periodicity detector verified."
+            readinessCategory = ModuleReadinessCategory.OPERATIONAL,
+            detailMessage = "MODULE OPERATIONAL: 8x8 perspective homography warp & checkerboard periodicity detector verified."
         )
 
-        // 3. Verify Trained Piece Recognition Ready (TFLite 13-Class Model Audit)
+        // 3. Verify Trained Piece Recognition (TFLite 13-Class Model Audit)
         val tfliteAudit = visionPipeline.auditTfliteModel()
         val trainedModelReady = tfliteAudit.isTrainedModelReady
         modules[2] = if (trainedModelReady) {
             modules[2].copy(
                 status = ModuleCheckStatus.PASSED,
-                detailMessage = "Trained Piece Recognition Ready: ${tfliteAudit.auditStatusSummary}"
+                readinessCategory = ModuleReadinessCategory.OPERATIONAL,
+                detailMessage = "MODULE OPERATIONAL: ${tfliteAudit.auditStatusSummary}"
             )
         } else {
             modules[2].copy(
                 status = ModuleCheckStatus.WARNING,
-                detailMessage = "INCOMPLETE: ${tfliteAudit.auditStatusSummary}"
+                readinessCategory = ModuleReadinessCategory.INCOMPLETE,
+                detailMessage = "MODULE INCOMPLETE: ${tfliteAudit.auditStatusSummary}"
             )
         }
 
-        // 4. Verify Manual Calibration Available & Board Renderer
+        // 4. Verify Manual Calibration & Board Renderer
         val theme = userSettings.value.boardTheme
         val pieceStyle = userSettings.value.pieceStyle
         val cornersTest = BoardCorners().mapBoardToOverlay(0.5f, 0.5f)
@@ -468,12 +546,21 @@ class ChessWinnerViewModel(application: Application) : AndroidViewModel(applicat
             )
             return
         }
-        modules[3] = modules[3].copy(
-            status = ModuleCheckStatus.PASSED,
-            detailMessage = "Manual Calibration Available: 4-corner homography handles, 64-square piece override editor & 8x8 Canvas (${theme.displayName}, ${pieceStyle.displayName}) ready."
-        )
+        modules[3] = if (target.requiresCameraAndVision && !trainedModelReady) {
+            modules[3].copy(
+                status = ModuleCheckStatus.PASSED,
+                readinessCategory = ModuleReadinessCategory.REQUIRES_USER_INPUT,
+                detailMessage = "REQUIRES USER INPUT: 64-square calibration editor, turn selector & 4-corner handles ready. Confirm board in Camera mode to run analysis."
+            )
+        } else {
+            modules[3].copy(
+                status = ModuleCheckStatus.PASSED,
+                readinessCategory = ModuleReadinessCategory.OPERATIONAL,
+                detailMessage = "MODULE OPERATIONAL: 4-corner homography handles, 64-square piece override editor & 8x8 Canvas (${theme.displayName}, ${pieceStyle.displayName}) ready."
+            )
+        }
 
-        // 5. Verify Stockfish / UCI Chess Engine Ready
+        // 5. Verify Chess Engine / UCI
         val engineInit = stockfishEngine.initializeEngine()
         val engineAudit = stockfishEngine.verifyEngineIdentity()
         if (engineInit.isFailure || !engineAudit.uciHandshakeVerified) {
@@ -488,16 +575,18 @@ class ChessWinnerViewModel(application: Application) : AndroidViewModel(applicat
         modules[4] = if (engineAudit.isGenuineStockfishBinary) {
             modules[4].copy(
                 status = ModuleCheckStatus.PASSED,
-                detailMessage = "Genuine Stockfish Ready: ${engineAudit.uciIdName} (Binary: ${engineAudit.executedBinaryPath}, MultiPV=${userSettings.value.multiPvLines})."
+                readinessCategory = ModuleReadinessCategory.OPERATIONAL,
+                detailMessage = "MODULE OPERATIONAL: Genuine Stockfish (${engineAudit.uciIdName}, MultiPV=${userSettings.value.multiPvLines})."
             )
         } else {
             modules[4].copy(
                 status = ModuleCheckStatus.WARNING,
-                detailMessage = "Embedded UCI Fallback Ready: ${engineAudit.uciIdName} — Genuine native Stockfish binary (libstockfish.so) not bundled."
+                readinessCategory = ModuleReadinessCategory.OPERATIONAL,
+                detailMessage = "MODULE OPERATIONAL (Embedded UCI Fallback): ${engineAudit.uciIdName} — Native libstockfish.so not bundled."
             )
         }
 
-        // 6. Verify Chess Rules & Position Manager Ready
+        // 6. Verify Chess Rules Engine & Position Manager
         val initialBoard = ChessRulesEngine.createInitialState()
         val legalMoveCount = ChessRulesEngine.generateLegalMoves(initialBoard).size
         if (legalMoveCount != 20) {
@@ -514,12 +603,14 @@ class ChessWinnerViewModel(application: Application) : AndroidViewModel(applicat
         if (!currentValidation.isValid) {
             positionManager.restartGame(chosenColor)
         }
+        refreshTurnSynchronizationLabel()
         modules[5] = modules[5].copy(
             status = ModuleCheckStatus.PASSED,
-            detailMessage = "Chess Rules Ready: 20 opening moves, castling, en passant, promotion, checkmate/draw & FEN/PGN Position Manager (${chosenColor.displayName}) verified."
+            readinessCategory = ModuleReadinessCategory.OPERATIONAL,
+            detailMessage = "MODULE OPERATIONAL: 20 opening moves, castling, en passant, promotion, checkmate/draw & Turn Sync (Player=${chosenColor.displayName}, Turn=${_sideToMove.value.displayName}) verified."
         )
 
-        // 7. Verify Database Ready (Room SQLite)
+        // 7. Verify Database (Room SQLite)
         val dbOk = runCatching {
             database.chessDao()
             true
@@ -536,7 +627,8 @@ class ChessWinnerViewModel(application: Application) : AndroidViewModel(applicat
         }
         modules[6] = modules[6].copy(
             status = ModuleCheckStatus.PASSED,
-            detailMessage = "Database Ready: Room SQLite offline storage ready (${savedGames.value.size} saved games)."
+            readinessCategory = ModuleReadinessCategory.OPERATIONAL,
+            detailMessage = "MODULE OPERATIONAL: Room SQLite offline storage ready (${savedGames.value.size} saved games)."
         )
 
         val fullAutoReady = hasPerm && geometryOk && trainedModelReady
@@ -549,6 +641,11 @@ class ChessWinnerViewModel(application: Application) : AndroidViewModel(applicat
             "Full Automatic TFLite Recognition Ready"
         } else {
             "Automatic TFLite Piece Recognition INCOMPLETE (chess_piece_classifier.tflite missing — Manual Calibration Active)"
+        }
+        val nextAction = if (target.requiresCameraAndVision) {
+            "Next Step: Tap 'Launch ${target.title}' -> Align camera grid with chessboard -> Confirm/calibrate pieces & sideToMove to view engine best-move arrows."
+        } else {
+            "Next Step: Tap 'Launch ${target.title}' to begin playing as ${chosenColor.displayName}."
         }
 
         // All required session modules initialized!
@@ -565,13 +662,23 @@ class ChessWinnerViewModel(application: Application) : AndroidViewModel(applicat
             databaseReady = dbOk,
             isFullAutomaticRecognitionReady = fullAutoReady,
             readinessBannerSubtitle = "$autoRecognitionLabel • Engine: $engineShortLabel",
+            nextActionGuidance = nextAction,
             failedModuleName = null,
             failureRecoveryMessage = null,
             modules = modules.toList()
         )
 
-        // Trigger analysis for current board
-        stockfishEngine.analyzePosition(positionManager.boardState.value)
+        if (target.requiresCameraAndVision) {
+            // In Camera mode, do not keep a stale recommendation before the user confirms the camera board
+            _cameraCalibrationBoard.value = positionManager.boardState.value
+            _cameraSideToMove.value = positionManager.boardState.value.activeColor
+            if (!_userConfirmedCalibration.value) {
+                stockfishEngine.clearAnalysisForUncertainPosition("Camera board not yet confirmed — tap 'Confirm Board' on Camera screen.")
+            }
+        } else {
+            // Trigger analysis for current digital/analysis board
+            stockfishEngine.analyzePosition(positionManager.boardState.value)
+        }
 
         // If user selected Black Pieces and is launching Digital Chessboard vs Engine, let White (Engine) play move 1 when entering
         if (target == SessionLaunchTarget.DIGITAL_CHESSBOARD &&
@@ -592,6 +699,7 @@ class ChessWinnerViewModel(application: Application) : AndroidViewModel(applicat
     ) {
         modules[failedIndex] = modules[failedIndex].copy(
             status = ModuleCheckStatus.FAILED,
+            readinessCategory = ModuleReadinessCategory.FAILED,
             detailMessage = errorDetail,
             recoveryHint = recoveryAction
         )
@@ -644,6 +752,21 @@ class ChessWinnerViewModel(application: Application) : AndroidViewModel(applicat
         playMoveFeedback(move)
         _aiCoachingText.value = null
         val newState = positionManager.boardState.value
+        _sideToMove.value = newState.activeColor
+        _cameraCalibrationBoard.value = newState
+        _cameraSideToMove.value = newState.activeColor
+        refreshTurnSynchronizationLabel()
+        if (_userConfirmedCalibration.value) {
+            lockConfirmedBoardIntoOverrides(newState)
+            _visionAnalysisResult.value = _visionAnalysisResult.value.copy(
+                detectionState = CameraDetectionState.CONFIGURATION_ALL_SET,
+                isChessboardDetected = true,
+                isPieceRecognitionConfident = true,
+                recognizedState = newState,
+                validationResult = ChessRulesEngine.validatePosition(newState),
+                statusBannerMessage = ChessVisionPipeline.MSG_CONFIGURATION_ALL_SET
+            )
+        }
         stockfishEngine.analyzePosition(newState)
 
         // Check if user is in Checkmate Learning interactive exercise mode
@@ -686,6 +809,7 @@ class ChessWinnerViewModel(application: Application) : AndroidViewModel(applicat
             val move = ChessRulesEngine.parseUciMove(current, bestUci) ?: return@launch
             if (positionManager.makeMove(move)) {
                 playMoveFeedback(move)
+                refreshTurnSynchronizationLabel()
                 stockfishEngine.analyzePosition(positionManager.boardState.value)
             }
         }
@@ -694,12 +818,12 @@ class ChessWinnerViewModel(application: Application) : AndroidViewModel(applicat
     fun playRecommendedBestMove() {
         val current = positionManager.boardState.value
         if (current.status.isTerminal) return
-        val bestUci = stockfishEngine.analysisState.value.bestMoveUci ?: return
+        val analysis = stockfishEngine.analysisState.value
+        if (analysis.fen != current.toFen() || analysis.error != null) return
+        val bestUci = analysis.bestMoveUci ?: return
         val move = ChessRulesEngine.parseUciMove(current, bestUci) ?: return
         if (positionManager.makeMove(move)) {
-            playMoveFeedback(move)
-            _aiCoachingText.value = null
-            stockfishEngine.analyzePosition(positionManager.boardState.value)
+            onMoveCompleted(move)
         }
     }
 
@@ -714,15 +838,30 @@ class ChessWinnerViewModel(application: Application) : AndroidViewModel(applicat
                 positionManager.undoLastMove()
             }
             _aiCoachingText.value = null
-            stockfishEngine.analyzePosition(positionManager.boardState.value)
+            val restored = positionManager.boardState.value
+            _cameraCalibrationBoard.value = restored
+            _cameraSideToMove.value = restored.activeColor
+            refreshTurnSynchronizationLabel()
+            if (_userConfirmedCalibration.value) {
+                lockConfirmedBoardIntoOverrides(restored)
+                _visionAnalysisResult.value = _visionAnalysisResult.value.copy(
+                    recognizedState = restored,
+                    validationResult = ChessRulesEngine.validatePosition(restored)
+                )
+            }
+            stockfishEngine.analyzePosition(restored)
         }
     }
 
     fun restartGame() {
         engineReplyJob?.cancel()
-        positionManager.restartGame(_playerColor.value)
+        positionManager.restartGame(positionManager.boardOrientation.value)
         _aiCoachingText.value = null
-        stockfishEngine.analyzePosition(positionManager.boardState.value)
+        val fresh = positionManager.boardState.value
+        _cameraCalibrationBoard.value = fresh
+        _cameraSideToMove.value = fresh.activeColor
+        refreshTurnSynchronizationLabel()
+        stockfishEngine.analyzePosition(fresh)
         if (_currentDestination.value == AppDestination.DIGITAL_BOARD &&
             _playAgainstEngine.value &&
             _playerColor.value == PieceColor.BLACK
@@ -731,8 +870,12 @@ class ChessWinnerViewModel(application: Application) : AndroidViewModel(applicat
         }
     }
 
+    /**
+     * Rotates/flips the visual board orientation (`WHITE` <-> `BLACK`) without EVER changing `playerSide`.
+     */
     fun flipBoardOrientation() {
         positionManager.flipOrientation()
+        refreshTurnSynchronizationLabel()
     }
 
     fun togglePlayAgainstEngine(enabled: Boolean) {
@@ -768,6 +911,9 @@ class ChessWinnerViewModel(application: Application) : AndroidViewModel(applicat
     }
 
     fun onCameraLifecycleState(ready: Boolean, errorMessage: String? = null) {
+        if (_userConfirmedCalibration.value) {
+            return
+        }
         if (errorMessage != null) {
             _visionAnalysisResult.value = _visionAnalysisResult.value.copy(
                 detectionState = CameraDetectionState.INITIALIZING_CAMERA,
@@ -784,27 +930,66 @@ class ChessWinnerViewModel(application: Application) : AndroidViewModel(applicat
         }
     }
 
-    fun processCameraLuminanceFrame(luminanceBytes: ByteArray, width: Int, height: Int) {
-        if (_isCameraPaused.value) return
+    /**
+     * Processes a grayscale luminance frame from CameraX (or tests).
+     * - When [_userConfirmedCalibration] is false and no trained TFLite model is bundled,
+     *   piece recognition is uncertain (`isPieceRecognitionConfident == false`), so stale
+     *   engine recommendations are immediately cleared (Mandatory Test G).
+     * - When [_userConfirmedCalibration] is true, the user's confirmed 64-square calibration
+     *   is preserved via [_manualSquareOverrides] and validated positions are analyzed by the engine.
+     */
+    fun processCameraLuminanceFrame(
+        luminanceBytes: ByteArray,
+        width: Int,
+        height: Int,
+        bypassThrottle: Boolean = false
+    ) {
+        if (_isCameraPaused.value && !bypassThrottle) return
         val now = System.currentTimeMillis()
         val throttleMs = userSettings.value.cameraFrameThrottleMs
-        if (now - lastCameraFrameTimestamp < throttleMs) return
+        if (!bypassThrottle && now - lastCameraFrameTimestamp < throttleMs) return
         lastCameraFrameTimestamp = now
 
-        viewModelScope.launch(Dispatchers.Default) {
-            val result = visionPipeline.analyzeLuminanceFrame(
-                luminanceData = luminanceBytes,
-                width = width,
-                height = height,
-                scanMode = _visionScanMode.value,
-                customCorners = if (_userConfirmedCalibration.value) _calibratedCorners.value else null,
-                orientation = positionManager.boardOrientation.value,
-                manualOverrides = _manualSquareOverrides.value,
-                userConfirmedCalibration = _userConfirmedCalibration.value
+        val isConfirmed = _userConfirmedCalibration.value
+        val activeTurn = _cameraSideToMove.value
+        val currentOverrides = _manualSquareOverrides.value
+        val currentCorners = if (_userConfirmedCorners.value || isConfirmed) _calibratedCorners.value else null
+
+        val result = visionPipeline.analyzeLuminanceFrame(
+            luminanceData = luminanceBytes,
+            width = width,
+            height = height,
+            scanMode = _visionScanMode.value,
+            customCorners = currentCorners,
+            orientation = positionManager.boardOrientation.value,
+            manualOverrides = currentOverrides,
+            userConfirmedCalibration = isConfirmed,
+            activeColor = activeTurn
+        )
+        _visionAnalysisResult.value = result
+        if (!_userConfirmedCorners.value && !isConfirmed && result.isChessboardDetected) {
+            _calibratedCorners.value = result.corners
+        }
+
+        if (!result.isChessboardDetected || !result.isPieceRecognitionConfident) {
+            // Uncertain or unconfirmed camera scan MUST NOT generate or retain a recommendation
+            stockfishEngine.clearAnalysisForUncertainPosition(
+                "Uncertain camera scan (${result.statusBannerMessage}) — confirm board calibration to analyze."
             )
-            _visionAnalysisResult.value = result
-            if (!_userConfirmedCalibration.value && result.isChessboardDetected) {
-                _calibratedCorners.value = result.corners
+        } else {
+            val recognized = result.recognizedState
+            val validation = result.validationResult
+            if (recognized != null && validation?.isValid == true) {
+                val loaded = positionManager.loadCustomState(recognized)
+                if (loaded.isValid) {
+                    refreshTurnSynchronizationLabel()
+                    val currentAnalysis = stockfishEngine.analysisState.value
+                    if (currentAnalysis.fen != recognized.toFen() || currentAnalysis.bestMoveUci == null) {
+                        stockfishEngine.analyzePosition(positionManager.boardState.value)
+                    }
+                }
+            } else if (recognized != null) {
+                stockfishEngine.analyzePosition(recognized)
             }
         }
     }
@@ -819,31 +1004,119 @@ class ChessWinnerViewModel(application: Application) : AndroidViewModel(applicat
 
     fun updateCornerCalibration(corners: BoardCorners) {
         _calibratedCorners.value = corners
-        _userConfirmedCalibration.value = true
+        _userConfirmedCorners.value = true
     }
 
-    fun confirmBoardPieceCalibration() {
-        _userConfirmedCalibration.value = true
-        val currentRecognized = _visionAnalysisResult.value.recognizedState ?: positionManager.boardState.value
-        val validation = positionManager.loadCustomState(currentRecognized)
+    private fun lockConfirmedBoardIntoOverrides(state: ChessBoardState) {
+        val fullMap = mutableMapOf<Square, Piece?>()
+        for (i in 0 until 64) {
+            fullMap[Square.fromIndex(i)] = state.squares[i]
+        }
+        _manualSquareOverrides.value = fullMap
+    }
+
+    /**
+     * Sets whose turn it is (`sideToMove`) for the Camera Calibration board.
+     * Never changes `playerSide` (`_playerColor`).
+     */
+    fun setCameraSideToMove(color: PieceColor) {
+        _cameraSideToMove.value = color
+        val updated = _cameraCalibrationBoard.value.copy(activeColor = color)
+        _cameraCalibrationBoard.value = updated
+        val validation = ChessRulesEngine.validatePosition(updated)
+        if (_userConfirmedCalibration.value) {
+            if (validation.isValid) {
+                positionManager.loadCustomState(updated)
+                refreshTurnSynchronizationLabel()
+                _visionAnalysisResult.value = _visionAnalysisResult.value.copy(
+                    detectionState = CameraDetectionState.CONFIGURATION_ALL_SET,
+                    statusBannerMessage = ChessVisionPipeline.MSG_CONFIGURATION_ALL_SET,
+                    isChessboardDetected = true,
+                    isPieceRecognitionConfident = true,
+                    recognizedState = positionManager.boardState.value,
+                    validationResult = validation
+                )
+                stockfishEngine.analyzePosition(positionManager.boardState.value)
+            } else {
+                _visionAnalysisResult.value = _visionAnalysisResult.value.copy(
+                    detectionState = CameraDetectionState.POSITION_VALIDATION,
+                    statusBannerMessage = "Invalid position: ${validation.errors.firstOrNull()}",
+                    isPieceRecognitionConfident = false,
+                    recognizedState = updated,
+                    validationResult = validation
+                )
+                stockfishEngine.analyzePosition(updated)
+            }
+        } else {
+            _visionAnalysisResult.value = _visionAnalysisResult.value.copy(
+                recognizedState = updated,
+                validationResult = validation
+            )
+        }
+    }
+
+    /**
+     * Clears all 64 squares of the Camera Calibration board so the user can place a custom endgame
+     * or verify that an empty board is rejected by the validator.
+     */
+    fun clearCameraCalibrationBoard() {
+        val emptySquares = List<Piece?>(64) { null }
+        val emptyState = ChessBoardState(
+            squares = emptySquares,
+            activeColor = _cameraSideToMove.value,
+            castlingRights = CastlingRights.NONE
+        )
+        _cameraCalibrationBoard.value = emptyState
+        lockConfirmedBoardIntoOverrides(emptyState)
+        _userConfirmedCalibration.value = false
+        val validation = ChessRulesEngine.validatePosition(emptyState)
+        _visionAnalysisResult.value = _visionAnalysisResult.value.copy(
+            detectionState = CameraDetectionState.POSITION_VALIDATION,
+            statusBannerMessage = "Invalid position: ${validation.errors.firstOrNull()}",
+            isPieceRecognitionConfident = false,
+            recognizedState = emptyState,
+            validationResult = validation
+        )
+        stockfishEngine.analyzePosition(emptyState)
+    }
+
+    /**
+     * Confirms the 64-square camera calibration board, validates chess legality, updates `sideToMove`,
+     * locks the confirmed squares against noisy camera frame overwrites, and runs engine analysis.
+     */
+    fun confirmBoardPieceCalibration(): PositionValidationResult {
+        val candidate = _cameraCalibrationBoard.value.copy(activeColor = _cameraSideToMove.value)
+        val validation = positionManager.loadCustomState(candidate)
         if (validation.isValid) {
+            _userConfirmedCalibration.value = true
+            val validState = positionManager.boardState.value
+            _cameraCalibrationBoard.value = validState
+            lockConfirmedBoardIntoOverrides(validState)
+            refreshTurnSynchronizationLabel()
             _visionAnalysisResult.value = _visionAnalysisResult.value.copy(
                 detectionState = CameraDetectionState.CONFIGURATION_ALL_SET,
                 statusBannerMessage = ChessVisionPipeline.MSG_CONFIGURATION_ALL_SET,
                 isChessboardDetected = true,
                 isPieceRecognitionConfident = true,
-                recognizedState = positionManager.boardState.value,
+                overallConfidence = 0.96f,
+                recognizedState = validState,
                 validationResult = validation
             )
-            stockfishEngine.analyzePosition(positionManager.boardState.value)
-            showToast("Configuration All Set — Position Validated & Engine Running")
+            stockfishEngine.analyzePosition(validState)
+            showToast("Configuration All Set — Position Validated (${_turnSynchronizationLabel.value})")
         } else {
+            _userConfirmedCalibration.value = false
             _visionAnalysisResult.value = _visionAnalysisResult.value.copy(
                 detectionState = CameraDetectionState.POSITION_VALIDATION,
                 statusBannerMessage = "Invalid position: ${validation.errors.firstOrNull()}",
+                isChessboardDetected = true,
+                isPieceRecognitionConfident = false,
+                recognizedState = candidate,
                 validationResult = validation
             )
+            stockfishEngine.analyzePosition(candidate)
         }
+        return validation
     }
 
     fun applyManualPieceOverrideInCamera(square: Square, piece: Piece?) {
@@ -851,11 +1124,15 @@ class ChessWinnerViewModel(application: Application) : AndroidViewModel(applicat
         nextMap[square] = piece
         _manualSquareOverrides.value = nextMap
 
-        // Update current recognized state immediately
-        val baseState = _visionAnalysisResult.value.recognizedState ?: positionManager.boardState.value
+        // Update current camera calibration state immediately
+        val baseState = _cameraCalibrationBoard.value
         val nextSquares = baseState.squares.toMutableList()
         nextSquares[square.index] = piece
-        val updatedState = baseState.copy(squares = nextSquares)
+        val updatedState = baseState.copy(
+            squares = nextSquares,
+            activeColor = _cameraSideToMove.value
+        )
+        _cameraCalibrationBoard.value = updatedState
         val validation = ChessRulesEngine.validatePosition(updatedState)
 
         _visionAnalysisResult.value = _visionAnalysisResult.value.copy(
@@ -870,15 +1147,22 @@ class ChessWinnerViewModel(application: Application) : AndroidViewModel(applicat
         )
         if (validation.isValid && _userConfirmedCalibration.value) {
             positionManager.loadCustomState(updatedState)
+            lockConfirmedBoardIntoOverrides(positionManager.boardState.value)
+            refreshTurnSynchronizationLabel()
             stockfishEngine.analyzePosition(positionManager.boardState.value)
+        } else if (!validation.isValid) {
+            stockfishEngine.analyzePosition(updatedState)
         }
     }
 
     fun loadStandardStartingBoardInCamera() {
-        _manualSquareOverrides.value = emptyMap()
-        _userConfirmedCalibration.value = true
         val initial = ChessRulesEngine.createInitialState()
+        _cameraSideToMove.value = initial.activeColor
+        _cameraCalibrationBoard.value = initial
+        lockConfirmedBoardIntoOverrides(initial)
+        _userConfirmedCalibration.value = true
         positionManager.loadCustomState(initial)
+        refreshTurnSynchronizationLabel()
         _visionAnalysisResult.value = _visionAnalysisResult.value.copy(
             detectionState = CameraDetectionState.CONFIGURATION_ALL_SET,
             statusBannerMessage = ChessVisionPipeline.MSG_CONFIGURATION_ALL_SET,
@@ -891,11 +1175,69 @@ class ChessWinnerViewModel(application: Application) : AndroidViewModel(applicat
         stockfishEngine.analyzePosition(initial)
     }
 
+    /**
+     * Confirms a legal move played on the physical or second-phone board in Camera Mode.
+     * Automatically updates `sideToMove` (`WHITE` <-> `BLACK`), locks the updated board,
+     * and triggers fresh engine analysis.
+     */
+    fun confirmMoveInCamera(from: Square, to: Square): ChessMove? {
+        if (!_userConfirmedCalibration.value) {
+            val confirmRes = confirmBoardPieceCalibration()
+            if (!confirmRes.isValid) return null
+        }
+        val move = positionManager.tryMoveBetweenSquares(from, to)
+        if (move != null) {
+            onMoveCompleted(move)
+        }
+        return move
+    }
+
+    /**
+     * Returns the engine's recommended move (UCI) ONLY when:
+     * 1. The camera board position is confirmed and confident (`isPieceRecognitionConfident == true`),
+     * 2. The position is legal (`validationResult?.isValid == true`),
+     * 3. The engine analysis belongs to the exact current validated FEN (`fen` match & no error), AND
+     * 4. It is the user's turn (`playerSide == sideToMove`).
+     * Never returns an opponent's move as the user's recommendation, and never returns a recommendation
+     * for an uncertain or invalid position.
+     */
+    fun getCameraUserRecommendedMoveUci(): String? {
+        val vr = _visionAnalysisResult.value
+        if (!_userConfirmedCalibration.value || !vr.isChessboardDetected || !vr.isPieceRecognitionConfident) {
+            return null
+        }
+        if (vr.validationResult?.isValid != true) return null
+        val validState = vr.recognizedState ?: return null
+        if (_playerColor.value != validState.activeColor) {
+            // Opponent's turn — never label or return opponent's move as user's recommendation
+            return null
+        }
+        val analysis = stockfishEngine.analysisState.value
+        if (analysis.error != null || analysis.fen != validState.toFen()) return null
+        return analysis.bestMoveUci
+    }
+
+    fun getCameraUserRecommendedMoveSan(): String? {
+        val vr = _visionAnalysisResult.value
+        if (!_userConfirmedCalibration.value || !vr.isChessboardDetected || !vr.isPieceRecognitionConfident) {
+            return null
+        }
+        if (vr.validationResult?.isValid != true) return null
+        val validState = vr.recognizedState ?: return null
+        if (_playerColor.value != validState.activeColor) {
+            return null
+        }
+        val analysis = stockfishEngine.analysisState.value
+        if (analysis.error != null || analysis.fen != validState.toFen()) return null
+        return analysis.bestMoveSan
+    }
+
     fun openRecognizedCameraPositionInAnalysis() {
-        val state = _visionAnalysisResult.value.recognizedState ?: positionManager.boardState.value
+        val state = _visionAnalysisResult.value.recognizedState ?: _cameraCalibrationBoard.value
         val validation = positionManager.loadCustomState(state)
         if (validation.isValid) {
             _isCameraPaused.value = true
+            refreshTurnSynchronizationLabel()
             stockfishEngine.analyzePosition(positionManager.boardState.value)
             navigateTo(AppDestination.POSITION_ANALYSIS)
         } else {

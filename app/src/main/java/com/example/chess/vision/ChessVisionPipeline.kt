@@ -134,6 +134,77 @@ class ChessVisionPipeline(private val context: Context? = null) {
             "white_pawn", "white_knight", "white_bishop", "white_rook", "white_queen", "white_king",
             "black_pawn", "black_knight", "black_bishop", "black_rook", "black_queen", "black_king"
         )
+
+        /**
+         * Extracts a tightly-packed, upright grayscale luminance ByteArray from a CameraX Y-plane ByteBuffer,
+         * stripping row padding (`rowStride`) and applying sensor `rotationDegrees` (0, 90, 180, 270)
+         * so that 2D image coordinates match the upright CameraX PreviewView.
+         */
+        fun extractUprightLuminanceFromYPlane(
+            buffer: java.nio.ByteBuffer,
+            width: Int,
+            height: Int,
+            rowStride: Int,
+            pixelStride: Int,
+            rotationDegrees: Int
+        ): Triple<ByteArray, Int, Int> {
+            buffer.rewind()
+            val limit = buffer.limit()
+            val unrotated = ByteArray(width * height)
+            val safeRowStride = if (rowStride >= width) rowStride else width
+            val safePixelStride = if (pixelStride >= 1) pixelStride else 1
+
+            for (y in 0 until height) {
+                val rowStart = y * safeRowStride
+                val dstRow = y * width
+                for (x in 0 until width) {
+                    val srcIdx = rowStart + x * safePixelStride
+                    unrotated[dstRow + x] = if (srcIdx in 0 until limit) buffer.get(srcIdx) else 0
+                }
+            }
+
+            val normRot = ((rotationDegrees % 360) + 360) % 360
+            return when (normRot) {
+                90 -> {
+                    val outW = height
+                    val outH = width
+                    val rotated = ByteArray(outW * outH)
+                    for (y in 0 until height) {
+                        for (x in 0 until width) {
+                            val newX = height - 1 - y
+                            val newY = x
+                            rotated[newY * outW + newX] = unrotated[y * width + x]
+                        }
+                    }
+                    Triple(rotated, outW, outH)
+                }
+                180 -> {
+                    val rotated = ByteArray(width * height)
+                    for (y in 0 until height) {
+                        for (x in 0 until width) {
+                            val newX = width - 1 - x
+                            val newY = height - 1 - y
+                            rotated[newY * width + newX] = unrotated[y * width + x]
+                        }
+                    }
+                    Triple(rotated, width, height)
+                }
+                270 -> {
+                    val outW = height
+                    val outH = width
+                    val rotated = ByteArray(outW * outH)
+                    for (y in 0 until height) {
+                        for (x in 0 until width) {
+                            val newX = y
+                            val newY = width - 1 - x
+                            rotated[newY * outW + newX] = unrotated[y * width + x]
+                        }
+                    }
+                    Triple(rotated, outW, outH)
+                }
+                else -> Triple(unrotated, width, height)
+            }
+        }
     }
 
     /**
@@ -233,6 +304,9 @@ class ChessVisionPipeline(private val context: Context? = null) {
      * Analyzes a grayscale luminance frame (from CameraX Y-plane or converted Bitmap)
      * to detect a chessboard, perspective-warp the 64 squares, evaluate alternating grid
      * periodicity, and classify square occupancy & piece silhouettes.
+     *
+     * Note: [orientation] only controls how physical grid squares map to files/ranks (a1..h8),
+     * while [activeColor] independently specifies whose turn it is (`sideToMove`).
      */
     fun analyzeLuminanceFrame(
         luminanceData: ByteArray,
@@ -242,7 +316,8 @@ class ChessVisionPipeline(private val context: Context? = null) {
         customCorners: BoardCorners? = null,
         orientation: PieceColor = PieceColor.WHITE,
         manualOverrides: Map<Square, Piece?> = emptyMap(),
-        userConfirmedCalibration: Boolean = false
+        userConfirmedCalibration: Boolean = false,
+        activeColor: PieceColor = PieceColor.WHITE
     ): VisionFrameAnalysisResult {
         if (width < 32 || height < 32 || luminanceData.size < width * height) {
             return VisionFrameAnalysisResult(
@@ -344,7 +419,7 @@ class ChessVisionPipeline(private val context: Context? = null) {
 
         val candidateState = ChessBoardState(
             squares = squaresList,
-            activeColor = orientation,
+            activeColor = activeColor,
             castlingRights = CastlingRights.ALL
         )
         val validation = ChessRulesEngine.validatePosition(candidateState)
@@ -426,7 +501,8 @@ class ChessVisionPipeline(private val context: Context? = null) {
         customCorners: BoardCorners? = null,
         orientation: PieceColor = PieceColor.WHITE,
         manualOverrides: Map<Square, Piece?> = emptyMap(),
-        userConfirmedCalibration: Boolean = false
+        userConfirmedCalibration: Boolean = false,
+        activeColor: PieceColor = PieceColor.WHITE
     ): VisionFrameAnalysisResult {
         val targetW = 256
         val targetH = 256
@@ -460,7 +536,8 @@ class ChessVisionPipeline(private val context: Context? = null) {
             customCorners = effectiveCorners,
             orientation = orientation,
             manualOverrides = manualOverrides,
-            userConfirmedCalibration = userConfirmedCalibration
+            userConfirmedCalibration = userConfirmedCalibration,
+            activeColor = activeColor
         )
     }
 

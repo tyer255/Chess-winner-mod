@@ -18,7 +18,6 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectDragGestures
-import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -43,11 +42,13 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Analytics
 import androidx.compose.material.icons.filled.Cameraswitch
 import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.DeleteSweep
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Error
 import androidx.compose.material.icons.filled.FlipCameraAndroid
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.TouchApp
 import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material.icons.filled.Verified
 import androidx.compose.material.icons.filled.Warning
@@ -82,6 +83,7 @@ import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -89,6 +91,7 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.example.chess.core.ChessBoardState
+import com.example.chess.core.ChessRulesEngine
 import com.example.chess.core.Piece
 import com.example.chess.core.PieceColor
 import com.example.chess.core.PieceType
@@ -108,7 +111,6 @@ import com.example.ui.theme.CharcoalCard
 import com.example.ui.theme.CrimsonError
 import com.example.ui.theme.CyanAccent
 import com.example.ui.theme.DeepCyanContainer
-import com.example.ui.theme.ElectricBlue
 import com.example.ui.theme.EmeraldSuccess
 import com.example.ui.theme.NavyBackground
 import com.example.ui.theme.NavySurface
@@ -128,6 +130,13 @@ fun CameraChessScreen(
     isCameraPaused: Boolean,
     useBackCamera: Boolean,
     orientation: PieceColor,
+    playerSide: PieceColor,
+    sideToMove: PieceColor,
+    turnStatusLabel: String,
+    cameraCalibrationBoard: ChessBoardState,
+    cameraSideToMove: PieceColor,
+    userRecommendedMoveUci: String?,
+    userRecommendedMoveSan: String?,
     boardState: ChessBoardState,
     engineAnalysis: EngineAnalysisResult,
     userSettings: UserSettingsState,
@@ -140,14 +149,17 @@ fun CameraChessScreen(
     onUpdateCorners: (BoardCorners) -> Unit,
     onConfirmCalibration: () -> Unit,
     onLoadStandardStartingBoard: () -> Unit,
+    onClearCalibrationBoard: () -> Unit,
+    onSetCameraSideToMove: (PieceColor) -> Unit,
     onManualPieceOverride: (Square, Piece?) -> Unit,
+    onConfirmMoveInCamera: (Square, Square) -> Unit,
+    onPlayRecommendedMoveInCamera: () -> Unit,
     onOpenInFullAnalysis: () -> Unit,
     onBack: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     BackHandler(onBack = onBack)
     val context = LocalContext.current
-    val lifecycleOwner = LocalLifecycleOwner.current
 
     var hasCameraPermission by remember {
         mutableStateOf(
@@ -174,6 +186,14 @@ fun CameraChessScreen(
     var showManualCorrectionPanel by remember { mutableStateOf(false) }
     var selectedCorrectionBrush by remember {
         mutableStateOf<Piece?>(Piece(PieceType.QUEEN, PieceColor.WHITE))
+    }
+    var moveTrackingSourceSquare by remember { mutableStateOf<Square?>(null) }
+
+    val activeBoardForSync = visionResult.recognizedState ?: cameraCalibrationBoard
+    val effectiveSideToMove = if (visionResult.isPieceRecognitionConfident && visionResult.validationResult?.isValid == true) {
+        sideToMove
+    } else {
+        cameraSideToMove
     }
 
     LazyColumn(
@@ -271,7 +291,7 @@ fun CameraChessScreen(
             }
         }
 
-        // 3. Detection State & Status Banner (Exact required messages)
+        // 3. Detection State & Status Banner
         item {
             DetectionStatusBanner(
                 visionResult = visionResult,
@@ -281,7 +301,37 @@ fun CameraChessScreen(
             )
         }
 
-        // 4. Live CameraX Preview + Aligned 8x8 Perspective Overlay
+        // 4. Player Side & Turn Synchronization Card
+        item {
+            PlayerTurnSyncCard(
+                playerSide = playerSide,
+                sideToMove = effectiveSideToMove,
+                turnStatusLabel = turnStatusLabel,
+                onSetSideToMove = onSetCameraSideToMove,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .widthIn(max = 620.dp)
+            )
+        }
+
+        // 5. Live Camera Engine Analysis & Move Recommendation Card
+        item {
+            CameraEngineAnalysisCard(
+                visionResult = visionResult,
+                playerSide = playerSide,
+                sideToMove = effectiveSideToMove,
+                turnStatusLabel = turnStatusLabel,
+                userRecommendedMoveUci = userRecommendedMoveUci,
+                userRecommendedMoveSan = userRecommendedMoveSan,
+                engineAnalysis = engineAnalysis,
+                onPlayRecommendedMove = onPlayRecommendedMoveInCamera,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .widthIn(max = 620.dp)
+            )
+        }
+
+        // 6. Live CameraX Preview + Aligned 8x8 Perspective Overlay
         item {
             Box(
                 modifier = Modifier
@@ -351,26 +401,20 @@ fun CameraChessScreen(
                     }
                 }
 
-                // Perspective-Aligned 8x8 Board Overlay (Corners, Grid, Coordinates, Confidence, and Validated Best-Move Arrow)
-                val canShowRecommendedArrow =
-                    userSettings.showOverlayArrows &&
-                        visionResult.isChessboardDetected &&
-                        visionResult.isPieceRecognitionConfident &&
-                        visionResult.validationResult?.isValid == true
-
+                // Perspective-Aligned 8x8 Board Overlay (Corners, Grid, Coordinates, and Validated User Turn Best-Move Arrow)
                 CameraBoardOverlayCanvas(
                     corners = calibratedCorners,
                     orientation = orientation,
                     visionResult = visionResult,
                     showCoordinates = userSettings.showOverlayCoordinates,
-                    recommendedMoveUci = if (canShowRecommendedArrow) engineAnalysis.bestMoveUci else null,
+                    recommendedMoveUci = if (userSettings.showOverlayArrows) userRecommendedMoveUci else null,
                     onUpdateCorners = onUpdateCorners,
                     modifier = Modifier.fillMaxSize()
                 )
             }
         }
 
-        // 5. 7-Step Camera Detection Pipeline Progress Strip
+        // 7. 7-Step Camera Detection Pipeline Progress Strip
         item {
             CameraPipelineStepsRow(
                 currentState = visionResult.detectionState,
@@ -380,7 +424,7 @@ fun CameraChessScreen(
             )
         }
 
-        // 6. Calibration, Manual Piece Correction & Engine Transfer Controls
+        // 8. Calibration, Manual Piece Correction & Live Move Sync Controls
         item {
             Card(
                 modifier = Modifier
@@ -392,7 +436,7 @@ fun CameraChessScreen(
             ) {
                 Column(modifier = Modifier.padding(14.dp)) {
                     Text(
-                        text = "BOARD CALIBRATION & PIECE VERIFICATION",
+                        text = "BOARD CALIBRATION & LIVE MOVE SYNCHRONIZATION",
                         style = MaterialTheme.typography.labelLarge,
                         color = CyanAccent
                     )
@@ -410,7 +454,10 @@ fun CameraChessScreen(
                         horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
                         Button(
-                            onClick = onConfirmCalibration,
+                            onClick = {
+                                moveTrackingSourceSquare = null
+                                onConfirmCalibration()
+                            },
                             colors = ButtonDefaults.buttonColors(
                                 containerColor = EmeraldSuccess,
                                 contentColor = Color(0xFF022C22)
@@ -425,7 +472,10 @@ fun CameraChessScreen(
                         }
 
                         OutlinedButton(
-                            onClick = onLoadStandardStartingBoard,
+                            onClick = {
+                                moveTrackingSourceSquare = null
+                                onLoadStandardStartingBoard()
+                            },
                             modifier = Modifier
                                 .weight(1f)
                                 .testTag("calibrate_starting_board_button")
@@ -443,14 +493,21 @@ fun CameraChessScreen(
                         horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
                         OutlinedButton(
-                            onClick = { showManualCorrectionPanel = !showManualCorrectionPanel },
+                            onClick = {
+                                moveTrackingSourceSquare = null
+                                showManualCorrectionPanel = !showManualCorrectionPanel
+                            },
                             modifier = Modifier
                                 .weight(1f)
                                 .testTag("toggle_manual_correction_button")
                         ) {
-                            Icon(Icons.Default.Edit, contentDescription = null, modifier = Modifier.size(18.dp))
+                            Icon(
+                                imageVector = if (showManualCorrectionPanel) Icons.Default.TouchApp else Icons.Default.Edit,
+                                contentDescription = null,
+                                modifier = Modifier.size(18.dp)
+                            )
                             Spacer(modifier = Modifier.width(6.dp))
-                            Text(if (showManualCorrectionPanel) "Hide Piece Editor" else "Correct Pieces")
+                            Text(if (showManualCorrectionPanel) "Track Legal Moves" else "Correct Pieces")
                         }
 
                         OutlinedButton(
@@ -461,9 +518,108 @@ fun CameraChessScreen(
                         ) {
                             Icon(Icons.Default.FlipCameraAndroid, contentDescription = null, modifier = Modifier.size(18.dp))
                             Spacer(modifier = Modifier.width(6.dp))
-                            Text("Flip (${orientation.displayName})")
+                            Text("Flip View (${orientation.displayName})")
                         }
                     }
+
+                    Spacer(modifier = Modifier.height(10.dp))
+
+                    // Interactive Synchronized 8x8 Board (supports either Legal Move Tracking or 64-Square Piece Brush Correction)
+                    val legalMovesFromSelected = remember(activeBoardForSync, moveTrackingSourceSquare, showManualCorrectionPanel) {
+                        val src = moveTrackingSourceSquare
+                        if (!showManualCorrectionPanel && src != null && visionResult.validationResult?.isValid == true) {
+                            ChessRulesEngine.generateLegalMovesFromSquare(activeBoardForSync, src)
+                        } else {
+                            emptyList()
+                        }
+                    }
+
+                    if (showManualCorrectionPanel) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = "PIECE CORRECTION PALETTE (Tap square to set piece)",
+                                style = MaterialTheme.typography.labelMedium,
+                                color = AmberWarning
+                            )
+                            OutlinedButton(
+                                onClick = onClearCalibrationBoard,
+                                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                                modifier = Modifier.testTag("camera_clear_board_button")
+                            ) {
+                                Icon(Icons.Default.DeleteSweep, contentDescription = null, modifier = Modifier.size(16.dp))
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text("Clear Board", fontSize = 12.sp)
+                            }
+                        }
+                        Spacer(modifier = Modifier.height(8.dp))
+                        PieceBrushSelectorRow(
+                            selectedBrush = selectedCorrectionBrush,
+                            onSelectBrush = { selectedCorrectionBrush = it }
+                        )
+                        Spacer(modifier = Modifier.height(10.dp))
+                    } else {
+                        Text(
+                            text = "LIVE MOVE SYNC BOARD: Tap a ${effectiveSideToMove.displayName} piece and destination square as moves are played on the 2nd phone or physical board.",
+                            style = MaterialTheme.typography.bodyMedium,
+                            fontSize = 12.sp,
+                            color = TextSecondary
+                        )
+                        Spacer(modifier = Modifier.height(8.dp))
+                    }
+
+                    InteractiveChessboard(
+                        boardState = activeBoardForSync,
+                        orientation = orientation,
+                        selectedSquare = if (showManualCorrectionPanel) null else moveTrackingSourceSquare,
+                        legalMoves = legalMovesFromSelected,
+                        recommendedMoveUci = userRecommendedMoveUci,
+                        boardTheme = userSettings.boardTheme,
+                        pieceStyle = userSettings.pieceStyle,
+                        showBestMoveArrow = userSettings.showOverlayArrows && userRecommendedMoveUci != null,
+                        onSquareTapped = { tappedSquare ->
+                            if (showManualCorrectionPanel) {
+                                onManualPieceOverride(tappedSquare, selectedCorrectionBrush)
+                            } else {
+                                val currentSrc = moveTrackingSourceSquare
+                                if (currentSrc == null) {
+                                    val pieceAtSq = activeBoardForSync.pieceAt(tappedSquare)
+                                    if (pieceAtSq != null && pieceAtSq.color == activeBoardForSync.activeColor) {
+                                        moveTrackingSourceSquare = tappedSquare
+                                    }
+                                } else if (currentSrc == tappedSquare) {
+                                    moveTrackingSourceSquare = null
+                                } else {
+                                    val isLegalDest = legalMovesFromSelected.any { move -> move.to == tappedSquare }
+                                    if (isLegalDest) {
+                                        moveTrackingSourceSquare = null
+                                        onConfirmMoveInCamera(currentSrc, tappedSquare)
+                                    } else {
+                                        val pieceAtSq = activeBoardForSync.pieceAt(tappedSquare)
+                                        moveTrackingSourceSquare = if (pieceAtSq != null && pieceAtSq.color == activeBoardForSync.activeColor) {
+                                            tappedSquare
+                                        } else {
+                                            null
+                                        }
+                                    }
+                                }
+                            }
+                        },
+                        onPieceDragged = { from, to ->
+                            if (!showManualCorrectionPanel) {
+                                moveTrackingSourceSquare = null
+                                onConfirmMoveInCamera(from, to)
+                            }
+                        },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .widthIn(max = 400.dp)
+                            .align(Alignment.CenterHorizontally)
+                            .testTag("camera_sync_board")
+                    )
 
                     Spacer(modifier = Modifier.height(10.dp))
 
@@ -488,20 +644,260 @@ fun CameraChessScreen(
                 }
             }
         }
+    }
+}
 
-        // 7. Interactive Manual Piece Correction Panel (when expanded)
-        if (showManualCorrectionPanel) {
-            item {
-                ManualPieceCorrectionCard(
-                    recognizedBoard = visionResult.recognizedState ?: boardState,
-                    orientation = orientation,
-                    selectedBrush = selectedCorrectionBrush,
-                    onSelectBrush = { selectedCorrectionBrush = it },
-                    onSquareTapped = { sq -> onManualPieceOverride(sq, selectedCorrectionBrush) },
+@Composable
+private fun PlayerTurnSyncCard(
+    playerSide: PieceColor,
+    sideToMove: PieceColor,
+    turnStatusLabel: String,
+    onSetSideToMove: (PieceColor) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val isUserTurn = playerSide == sideToMove
+    val badgeColor = if (isUserTurn) EmeraldSuccess else AmberWarning
+    val badgeBg = if (isUserTurn) Color(0xFF062E22) else Color(0xFF2E1F05)
+
+    Card(
+        modifier = modifier
+            .border(1.dp, CharcoalBorder, RoundedCornerShape(14.dp))
+            .testTag("camera_turn_sync_card"),
+        shape = RoundedCornerShape(14.dp),
+        colors = CardDefaults.cardColors(containerColor = CharcoalCard)
+    ) {
+        Column(modifier = Modifier.padding(14.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column {
+                    Text(
+                        text = "Player Side: ${playerSide.name}",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = TextPrimary,
+                        modifier = Modifier.testTag("camera_player_side_text")
+                    )
+                    Text(
+                        text = "Side to Move: ${sideToMove.name}",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = CyanAccent,
+                        modifier = Modifier.testTag("camera_side_to_move_text")
+                    )
+                }
+
+                Surface(
+                    shape = RoundedCornerShape(8.dp),
+                    color = badgeBg,
                     modifier = Modifier
-                        .fillMaxWidth()
-                        .widthIn(max = 620.dp)
+                        .border(1.5.dp, badgeColor, RoundedCornerShape(8.dp))
+                ) {
+                    Text(
+                        text = turnStatusLabel,
+                        style = MaterialTheme.typography.labelLarge,
+                        fontWeight = FontWeight.Bold,
+                        color = badgeColor,
+                        modifier = Modifier
+                            .padding(horizontal = 12.dp, vertical = 6.dp)
+                            .testTag("camera_turn_status_badge")
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(8.dp))
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = "Active Turn on Board:",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = TextSecondary
                 )
+                FilterChip(
+                    selected = sideToMove == PieceColor.WHITE,
+                    onClick = { onSetSideToMove(PieceColor.WHITE) },
+                    label = { Text("White to Move") },
+                    modifier = Modifier
+                        .weight(1f)
+                        .testTag("camera_set_white_turn_chip")
+                )
+                FilterChip(
+                    selected = sideToMove == PieceColor.BLACK,
+                    onClick = { onSetSideToMove(PieceColor.BLACK) },
+                    label = { Text("Black to Move") },
+                    modifier = Modifier
+                        .weight(1f)
+                        .testTag("camera_set_black_turn_chip")
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun CameraEngineAnalysisCard(
+    visionResult: VisionFrameAnalysisResult,
+    playerSide: PieceColor,
+    sideToMove: PieceColor,
+    turnStatusLabel: String,
+    userRecommendedMoveUci: String?,
+    userRecommendedMoveSan: String?,
+    engineAnalysis: EngineAnalysisResult,
+    onPlayRecommendedMove: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val isBoardValidatedAndConfirmed =
+        visionResult.isChessboardDetected &&
+            visionResult.isPieceRecognitionConfident &&
+            visionResult.validationResult?.isValid == true
+
+    val isInvalidPosition = visionResult.validationResult?.isValid == false
+    val isUserTurn = playerSide == sideToMove
+    val currentValidFen = visionResult.recognizedState?.toFen()
+    val isEngineMatched = isBoardValidatedAndConfirmed &&
+        currentValidFen != null &&
+        engineAnalysis.fen == currentValidFen &&
+        engineAnalysis.error == null
+
+    val borderColor = when {
+        isInvalidPosition -> CrimsonError
+        !isBoardValidatedAndConfirmed -> AmberWarning
+        isUserTurn -> EmeraldSuccess
+        else -> CyanAccent
+    }
+
+    Card(
+        modifier = modifier
+            .border(1.5.dp, borderColor, RoundedCornerShape(14.dp))
+            .testTag("camera_engine_analysis_card"),
+        shape = RoundedCornerShape(14.dp),
+        colors = CardDefaults.cardColors(containerColor = NavySurface)
+    ) {
+        Column(modifier = Modifier.padding(14.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = "LIVE CAMERA ENGINE ANALYSIS",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = CyanAccent
+                )
+                if (isEngineMatched) {
+                    val evalFormatted = if (engineAnalysis.mateInMoves != null) {
+                        val m = engineAnalysis.mateInMoves
+                        if (m > 0) "+M$m" else "-M${kotlin.math.abs(m)}"
+                    } else {
+                        val pawns = engineAnalysis.evaluationCentipawns / 100.0
+                        val sign = if (pawns > 0) "+" else ""
+                        String.format("%s%.2f", sign, pawns)
+                    }
+                    Text(
+                        text = "Eval: $evalFormatted (d=${engineAnalysis.currentDepth})",
+                        style = MaterialTheme.typography.labelLarge,
+                        fontWeight = FontWeight.Bold,
+                        color = EmeraldSuccess,
+                        modifier = Modifier.testTag("camera_evaluation_text")
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(6.dp))
+
+            when {
+                isInvalidPosition -> {
+                    val err = visionResult.validationResult?.errors?.firstOrNull() ?: "Illegal board configuration"
+                    Text(
+                        text = "Invalid position: $err — No best-move recommendation is generated for an invalid position.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = FontWeight.SemiBold,
+                        color = CrimsonError,
+                        modifier = Modifier.testTag("camera_analysis_status_text")
+                    )
+                }
+
+                !isBoardValidatedAndConfirmed -> {
+                    Text(
+                        text = "Uncertain / Unconfirmed Camera Scan — Verify pieces on the Synchronized Board below and tap 'Confirm Board' to generate engine recommendations.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = AmberWarning,
+                        modifier = Modifier.testTag("camera_analysis_status_text")
+                    )
+                }
+
+                !isUserTurn -> {
+                    Text(
+                        text = "$turnStatusLabel (${sideToMove.displayName} to move) — Waiting for opponent move on the chessboard.",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = AmberWarning,
+                        modifier = Modifier.testTag("camera_analysis_status_text")
+                    )
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        text = "When ${sideToMove.displayName} plays a move on the 2nd phone or physical board, tap that move on the Live Move Sync Board below to switch to YOUR TURN.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = TextSecondary
+                    )
+                }
+
+                userRecommendedMoveSan != null && userRecommendedMoveUci != null -> {
+                    Text(
+                        text = "Recommended Move (${playerSide.displayName}): $userRecommendedMoveSan ($userRecommendedMoveUci)",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = EmeraldSuccess,
+                        modifier = Modifier.testTag("camera_recommended_move_text")
+                    )
+
+                    if (engineAnalysis.candidateLines.isNotEmpty()) {
+                        Spacer(modifier = Modifier.height(6.dp))
+                        engineAnalysis.candidateLines.take(3).forEach { line ->
+                            val previewSan = line.principalVariationSan.take(4).joinToString(" ")
+                            Text(
+                                text = "#${line.multiPvIndex} [${line.formattedEvaluation}] $previewSan",
+                                style = MaterialTheme.typography.bodyMedium,
+                                fontFamily = FontFamily.Monospace,
+                                fontSize = 12.sp,
+                                color = TextSecondary
+                            )
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(10.dp))
+                    Button(
+                        onClick = onPlayRecommendedMove,
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = EmeraldSuccess,
+                            contentColor = Color(0xFF022C22)
+                        ),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("camera_play_recommended_move_button")
+                    ) {
+                        Icon(Icons.Default.PlayArrow, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(
+                            text = "Apply Recommended Move ($userRecommendedMoveSan) on Sync Board",
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                }
+
+                else -> {
+                    Text(
+                        text = "Analyzing validated position for ${playerSide.displayName}...",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = CyanAccent,
+                        modifier = Modifier.testTag("camera_analysis_status_text")
+                    )
+                }
             }
         }
     }
@@ -594,10 +990,15 @@ private fun CameraXLivePreview(
                     try {
                         val plane = imageProxy.planes.firstOrNull()
                         if (plane != null) {
-                            val buffer = plane.buffer
-                            val bytes = ByteArray(buffer.remaining())
-                            buffer.get(bytes)
-                            onLuminanceFrame(bytes, imageProxy.width, imageProxy.height)
+                            val (bytes, uprightW, uprightH) = ChessVisionPipeline.extractUprightLuminanceFromYPlane(
+                                buffer = plane.buffer,
+                                width = imageProxy.width,
+                                height = imageProxy.height,
+                                rowStride = plane.rowStride,
+                                pixelStride = plane.pixelStride,
+                                rotationDegrees = imageProxy.imageInfo.rotationDegrees
+                            )
+                            onLuminanceFrame(bytes, uprightW, uprightH)
                         }
                     } catch (_: Exception) {
                     } finally {
@@ -666,7 +1067,7 @@ private fun CameraXLivePreview(
  * Section 14: CAMERA BOARD OVERLAY
  * Draws perspective-corrected 8x8 grid, draggable 4-corner calibration handles,
  * algebraic coordinates, recognition confidence badges, and Stockfish arrows
- * when the recognized position is validated.
+ * when the recognized position is validated and it is the user's turn.
  */
 @Composable
 private fun CameraBoardOverlayCanvas(
@@ -775,7 +1176,7 @@ private fun CameraBoardOverlayCanvas(
             }
         }
 
-        // 3. Draw directional arrow for recommended move ONLY when position is validated & confident
+        // 3. Draw directional arrow for recommended move ONLY when position is validated, confident & user's turn
         if (recommendedMoveUci != null && recommendedMoveUci.length >= 4) {
             val fromSq = Square.fromAlgebraic(recommendedMoveUci.substring(0, 2))
             val toSq = Square.fromAlgebraic(recommendedMoveUci.substring(2, 4))
@@ -783,7 +1184,7 @@ private fun CameraBoardOverlayCanvas(
                 val p1 = corners.squareCenterInOverlay(fromSq, orientation)
                 val p2 = corners.squareCenterInOverlay(toSq, orientation)
                 val start = Offset(p1.x * w, p1.y * h)
-                val end = Offset(p2.x * w, p2.y * h)
+                val end = Offset(p2.x * h * (w / h), p2.y * h)
 
                 drawCircle(color = EmeraldSuccess.copy(alpha = 0.55f), radius = w * 0.035f, center = start)
                 drawLine(
@@ -867,58 +1268,6 @@ private fun CameraPipelineStepsRow(
                     )
                 }
             }
-        }
-    }
-}
-
-@Composable
-private fun ManualPieceCorrectionCard(
-    recognizedBoard: ChessBoardState,
-    orientation: PieceColor,
-    selectedBrush: Piece?,
-    onSelectBrush: (Piece?) -> Unit,
-    onSquareTapped: (Square) -> Unit,
-    modifier: Modifier = Modifier
-) {
-    Card(
-        modifier = modifier
-            .border(1.dp, CyanAccent.copy(alpha = 0.5f), RoundedCornerShape(14.dp)),
-        shape = RoundedCornerShape(14.dp),
-        colors = CardDefaults.cardColors(containerColor = NavySurface)
-    ) {
-        Column(modifier = Modifier.padding(14.dp)) {
-            Text(
-                text = "MANUAL PIECE CORRECTION PALETTE",
-                style = MaterialTheme.typography.labelLarge,
-                color = CyanAccent
-            )
-            Spacer(modifier = Modifier.height(4.dp))
-            Text(
-                text = "Select a piece below and tap any square on the board to correct misidentified pieces.",
-                style = MaterialTheme.typography.bodyMedium,
-                color = TextSecondary
-            )
-            Spacer(modifier = Modifier.height(10.dp))
-
-            PieceBrushSelectorRow(
-                selectedBrush = selectedBrush,
-                onSelectBrush = onSelectBrush
-            )
-
-            Spacer(modifier = Modifier.height(10.dp))
-
-            InteractiveChessboard(
-                boardState = recognizedBoard,
-                orientation = orientation,
-                selectedSquare = null,
-                legalMoves = emptyList(),
-                showBestMoveArrow = false,
-                onSquareTapped = onSquareTapped,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .widthIn(max = 400.dp)
-                    .align(Alignment.CenterHorizontally)
-            )
         }
     }
 }
